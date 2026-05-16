@@ -9,6 +9,11 @@ load_dotenv()
 
 SERPAPI_KEY = os.getenv('SERPAPI_KEY')
 
+# Validate SerpApi key on startup
+if not SERPAPI_KEY:
+    st.error("⚠️ SerpApi key not found! Please set SERPAPI_KEY in your .env file or Streamlit Secrets.")
+    st.stop()
+
 st.set_page_config(
     page_title="Travel Currency Trends",
     page_icon="💱",
@@ -25,24 +30,36 @@ page = st.sidebar.radio(
     ["🏠 Dashboard", "📈 Trends Analysis", "🧮 Travel Calculator", "📰 Market News", "ℹ️ About"]
 )
 
-# Function to fetch exchange rate (simulated for demo)
+# Function to fetch exchange rate
 def get_exchange_rate():
     try:
-        response = requests.get('https://api.exchangerate-api.com/v4/latest/USD')
+        response = requests.get('https://api.exchangerate-api.com/v4/latest/USD', timeout=5)
+        response.raise_for_status()
         data = response.json()
         return data['rates'].get('BRL', 5.0)
-    except:
+    except requests.exceptions.RequestException as e:
+        st.warning(f"⚠️ Could not fetch live rates. Using default rate. ({str(e)[:50]})")
         return 5.0  # Fallback rate
 
 # Function to fetch news from SerpApi
 def fetch_market_news(query):
     try:
         url = f"https://serpapi.com/search?q={query}&tbm=nws&api_key={SERPAPI_KEY}"
-        response = requests.get(url)
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
         data = response.json()
+        
+        # Check for API errors
+        if 'error' in data:
+            st.error(f"SerpApi Error: {data.get('error', 'Unknown error')}")
+            return []
+        
         return data.get('news_results', [])
-    except Exception as e:
-        st.error(f"Error fetching news: {e}")
+    except requests.exceptions.Timeout:
+        st.error("⚠️ Request timeout. SerpApi took too long to respond.")
+        return []
+    except requests.exceptions.RequestException as e:
+        st.error(f"⚠️ Error fetching news: {str(e)[:100]}")
         return []
 
 # Dashboard Page
@@ -73,27 +90,31 @@ if page == "🏠 Dashboard":
         'Rate': rates
     })
     
-    st.line_chart(df_trends.set_index('Date'))
-    st.caption("30-Day USD/BRL Exchange Rate Trend")
+    st.line_chart(df_trends.set_index('Date'), use_container_width=True)
+    st.caption("📊 30-Day USD/BRL Exchange Rate Trend (Historical Data)")
 
 # Trends Analysis Page
 elif page == "📈 Trends Analysis":
     st.header("Market Trends Analysis")
     st.write("Analyzing market trends and news affecting USD/BRL exchange rates...")
     
-    if st.button("Fetch Latest Market News"):
-        st.info("Fetching news from SerpApi...")
-        news = fetch_market_news("USD BRL exchange rate Brazil")
+    if st.button("🔍 Fetch Latest Market News", key="trends_news"):
+        with st.spinner("Fetching news from SerpApi..."):
+            news = fetch_market_news("USD BRL exchange rate Brazil")
         
         if news:
-            st.success(f"Found {len(news)} news articles")
+            st.success(f"✅ Found {len(news)} news articles")
             for i, article in enumerate(news[:5], 1):
                 st.subheader(f"{i}. {article.get('title', 'No title')}")
                 st.write(article.get('snippet', 'No description'))
-                st.write(f"Source: {article.get('source', 'Unknown')}")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.caption(f"📰 Source: {article.get('source', 'Unknown')}")
+                with col2:
+                    st.caption(f"📅 Date: {article.get('date', 'Unknown')}")
                 st.divider()
         else:
-            st.warning("No news found. Please check your SerpApi key.")
+            st.warning("❌ No news found. Please check your SerpApi key or try a different search.")
 
 # Travel Calculator Page
 elif page == "🧮 Travel Calculator":
@@ -113,45 +134,62 @@ elif page == "🧮 Travel Calculator":
     st.divider()
     
     # Budget breakdown
-    st.subheader("Budget Breakdown")
+    st.subheader("💰 Budget Breakdown")
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        accommodation = st.number_input("Accommodation (% of budget)", 0, 100, 40) / 100 * brl_amount
+        accommodation_pct = st.slider("🏨 Accommodation (%)", 0, 100, 40, key="accommodation")
+        accommodation = accommodation_pct / 100 * brl_amount
         st.metric("Accommodation", f"R$ {accommodation:,.2f}")
     
     with col2:
-        food = st.number_input("Food & Dining (% of budget)", 0, 100, 30) / 100 * brl_amount
+        food_pct = st.slider("🍽️ Food & Dining (%)", 0, 100, 30, key="food")
+        food = food_pct / 100 * brl_amount
         st.metric("Food & Dining", f"R$ {food:,.2f}")
     
     with col3:
-        activities = st.number_input("Activities (% of budget)", 0, 100, 30) / 100 * brl_amount
+        activities_pct = st.slider("🎭 Activities (%)", 0, 100, 30, key="activities")
+        activities = activities_pct / 100 * brl_amount
         st.metric("Activities", f"R$ {activities:,.2f}")
+    
+    # Summary
+    st.divider()
+    total_allocated = accommodation + food + activities
+    remaining = brl_amount - total_allocated
+    
+    st.info(f"💵 Total Budget: R$ {brl_amount:,.2f} | Allocated: R$ {total_allocated:,.2f} | Remaining: R$ {remaining:,.2f}")
 
 # Market News Page
 elif page == "📰 Market News":
     st.header("Latest Currency & Financial News")
     
-    search_query = st.text_input("Search for news", "currency exchange Brazil")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        search_query = st.text_input("🔍 Search for news", "currency exchange Brazil")
+    with col2:
+        search_button = st.button("Search", key="market_news_search")
     
-    if st.button("Search News"):
-        st.info(f"Searching for: {search_query}")
-        news = fetch_market_news(search_query)
-        
-        if news:
-            st.success(f"Found {len(news)} articles")
-            for article in news[:10]:
-                with st.container():
-                    st.subheader(article.get('title', 'No title'))
-                    st.write(article.get('snippet', ''))
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.caption(f"Source: {article.get('source', 'Unknown')}")
-                    with col2:
-                        st.caption(f"Date: {article.get('date', 'Unknown')}")
-                    st.divider()
+    if search_button:
+        if not search_query.strip():
+            st.warning("⚠️ Please enter a search query")
         else:
-            st.warning("No articles found.")
+            with st.spinner(f"Searching for: {search_query}"):
+                news = fetch_market_news(search_query)
+            
+            if news:
+                st.success(f"✅ Found {len(news)} articles")
+                for article in news[:10]:
+                    with st.container():
+                        st.subheader(article.get('title', 'No title'))
+                        st.write(article.get('snippet', ''))
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.caption(f"📰 Source: {article.get('source', 'Unknown')}")
+                        with col2:
+                            st.caption(f"📅 Date: {article.get('date', 'Unknown')}")
+                        st.divider()
+            else:
+                st.warning("❌ No articles found. Try a different search query.")
 
 # About Page
 elif page == "ℹ️ About":
@@ -171,17 +209,19 @@ elif page == "ℹ️ About":
     
     ### 🚀 Features
     
-    ✅ Real-time USD/BRL exchange rates
-    ✅ Interactive budget planning tool
-    ✅ Market news and financial insights
+    ✅ Real-time USD/BRL exchange rates from ExchangeRate-API
+    ✅ Interactive budget planning tool with percentage allocation
+    ✅ Market news and financial insights via SerpApi
     ✅ Beautiful, user-friendly interface
     ✅ Mobile-responsive design
+    ✅ Error handling and fallback rates
     
     ### 🛠️ Technology Stack
     
-    - **Frontend**: Streamlit
-    - **Data Sources**: SerpApi, ExchangeRate-API
+    - **Frontend**: Streamlit (Python web framework)
+    - **Data Sources**: SerpApi (market news), ExchangeRate-API (exchange rates)
     - **Language**: Python 3.9+
+    - **Libraries**: pandas, requests, python-dotenv
     
     ### 📝 How to Use
     
@@ -189,6 +229,7 @@ elif page == "ℹ️ About":
     2. Check current exchange rates on the Dashboard
     3. Use the Travel Calculator to plan your budget
     4. Read latest market news in the Market News section
+    5. Analyze trends and currency patterns
     
     ### 🎯 Target Users
     
@@ -196,13 +237,25 @@ elif page == "ℹ️ About":
     - 💼 Business travelers
     - 🏦 Currency traders and analysts
     - 📊 Financial researchers
+    - 👨‍💻 Developers learning SerpApi integration
     
-    ### 📧 Support
+    ### 📚 API Documentation
     
-    For issues or suggestions, please visit the GitHub repository.
+    - [SerpApi Documentation](https://serpapi.com/search-engine-apis)
+    - [ExchangeRate-API Docs](https://www.exchangerate-api.com/)
+    - [Streamlit Documentation](https://docs.streamlit.io/)
+    
+    ### 🎉 Built For
+    
+    **Anaconda Labs SerpApi Raffle Challenge**
+    
+    ---
+    
+    **Made with ❤️ using SerpApi and Streamlit**
     """)
 
 st.sidebar.divider()
 st.sidebar.info(
-    "🔗 Powered by [SerpApi](https://serpapi.com) for real-time market data"
+    "🔗 Powered by [SerpApi](https://serpapi.com) for real-time market data\n\n"
+    "🌍 [GitHub Repository](https://github.com/AdilsonTorres/travel-currency-trends)"
 )
